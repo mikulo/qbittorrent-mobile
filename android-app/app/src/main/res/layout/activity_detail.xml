@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical">
+    <com.google.android.material.appbar.MaterialToolbar android:id="@+id/toolbar" android:layout_width="match_parent" android:layout_height="?attr/actionBarSize" android:background="@color/qb_blue" android:theme="@style/ThemeOverlay.MaterialComponents.Dark.ActionBar" app:title="@string/details" />
+    <ScrollView android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="18dp">
+            <TextView android:id="@+id/detail_name" android:layout_width="match_parent" android:layout_height="wrap_content" android:textAppearance="@style/TextAppearance.MaterialComponents.Headline6" android:textStyle="bold" />
+            <ProgressBar android:id="@+id/detail_progress" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="8dp" android:layout_marginTop="16dp" android:max="100000" android:progressDrawable="@drawable/bg_progress" />
+            <TextView android:id="@+id/detail_stats" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:lineSpacingExtra="6dp" android:textIsSelectable="true" />
+            <com.google.android.material.button.MaterialButtonToggleGroup android:id="@+id/actions" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" app:singleSelection="false">
+                <com.google.android.material.button.MaterialButton android:id="@+id/action_pause" style="@style/Widget.MaterialComponents.Button.OutlinedButton" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="@string/pause" android:textSize="11sp" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/action_announce" style="@style/Widget.MaterialComponents.Button.OutlinedButton" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="@string/reannounce" android:textSize="11sp" />
+                <com.google.android.material.button.MaterialButton android:id="@+id/action_recheck" style="@style/Widget.MaterialComponents.Button.OutlinedButton" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="@string/recheck" android:textSize="11sp" />
+            </com.google.android.material.button.MaterialButtonToggleGroup>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:text="@string/task_speed_limits" android:textAppearance="@style/TextAppearance.MaterialComponents.Subtitle1" android:textStyle="bold" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:orientation="horizontal">
+                <com.google.android.material.textfield.TextInputLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:hint="@string/task_download_limit" app:boxBackgroundMode="outline">
+                    <com.google.android.material.textfield.TextInputEditText android:id="@+id/detail_download_limit" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="number" />
+                </com.google.android.material.textfield.TextInputLayout>
+                <com.google.android.material.textfield.TextInputLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_weight="1" android:hint="@string/task_upload_limit" app:boxBackgroundMode="outline">
+                    <com.google.android.material.textfield.TextInputEditText android:id="@+id/detail_upload_limit" android:layout_width="match_parent" android:layout_height="wrap_content" android:inputType="number" />
+                </com.google.android.material.textfield.TextInputLayout>
+            </LinearLayout>
+            <com.google.android.material.button.MaterialButton android:id="@+id/action_save_limits" style="@style/Widget.MaterialComponents.Button.OutlinedButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="@string/apply_task_limits" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:text="@string/files" android:textAppearance="@style/TextAppearance.MaterialComponents.Subtitle1" android:textStyle="bold" />
+            <TextView android:id="@+id/detail_files" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:lineSpacingExtra="5dp" android:textIsSelectable="true" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:text="@string/trackers" android:textAppearance="@style/TextAppearance.MaterialComponents.Subtitle1" android:textStyle="bold" />
+            <TextView android:id="@+id/detail_trackers" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:lineSpacingExtra="5dp" android:textIsSelectable="true" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/action_delete" style="@style/Widget.MaterialComponents.Button.OutlinedButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="28dp" android:text="@string/delete" android:textColor="@color/qb_red" app:strokeColor="@color/qb_red" />
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

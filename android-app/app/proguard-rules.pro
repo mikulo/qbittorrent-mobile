@@ -1,0 +1,2 @@
+-keep class org.libtorrent4j.** { *; }
+-keep class org.qbittorrent.mobile.** { *; }

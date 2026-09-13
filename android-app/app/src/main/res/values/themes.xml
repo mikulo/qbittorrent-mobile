@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.QBittorrent" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/qb_blue</item>
+        <item name="colorPrimaryVariant">@color/qb_blue_dark</item>
+        <item name="colorSecondary">@color/qb_green</item>
+        <item name="android:statusBarColor">@color/qb_blue_dark</item>
+        <item name="android:navigationBarColor">@color/surface_card</item>
+        <item name="android:fontFamily">sans</item>
+    </style>
+</resources>

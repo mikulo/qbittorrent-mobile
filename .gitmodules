@@ -1,0 +1,3 @@
+[submodule "upstream-qbittorrent"]
+	path = upstream-qbittorrent
+	url = https://github.com/qbittorrent/qBittorrent.git

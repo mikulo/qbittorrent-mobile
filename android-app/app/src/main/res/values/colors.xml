@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="qb_blue">#2F67BA</color>
+    <color name="qb_blue_dark">#1E4E92</color>
+    <color name="qb_green">#2E8B57</color>
+    <color name="qb_red">#C83C3C</color>
+    <color name="surface_card">#FFFFFF</color>
+    <color name="text_secondary">#667085</color>
+    <color name="divider">#DCE2EA</color>
+</resources>

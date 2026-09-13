@@ -1,0 +1,43 @@
+# Local-only workspace files and publishing helpers
+/.java-temp/
+/.publish-work/
+/.codex/
+/.idea/
+/.vscode/
+
+# Credentials and signing material (never commit)
+.env
+.env.*
+*token*.txt*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+keystore.properties
+
+# Private/public local test inputs: even public magnets are not distributed
+*.torrent
+magnet*.txt
+dl-link*.txt
+
+# Generated build outputs and local diagnostic data
+**/.gradle/
+**/build/
+local.properties
+*.apk
+*.aab
+*.apks
+*.log
+qbm-*.txt
+*.fastresume
+session.state
+**/logs/
+**/captures/
+/android-app/artifacts/
+
+# Historical screenshots have not been reviewed for public release
+/android-app/docs/screenshots/
+qa-*.png
+selection-qa.png
