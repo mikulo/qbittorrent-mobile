@@ -74,7 +74,13 @@ $env:ANDROID_HOME = 'C:\Android\Sdk'
 
 Debug APK 使用 Android 调试证书签名，适合直接安装测试。正式分发前应创建并妥善保管自己的 release keystore，然后在本机配置 release signing。
 
-本地当前测试产物：`artifacts/qBittorrent-Mobile-0.3.6-universal-debug.apk`。公开仓库不包含历史 APK 或私有测试输入；请按上述步骤自行构建。
+本地当前构建产物：`artifacts/qBittorrent-Mobile-0.3.8-universal-debug.apk`。公开仓库不包含历史 APK 或私有测试输入；请按上述步骤自行构建。
+
+0.3.8（versionCode 13）按用户要求将列表、详情、通知、异步状态/统计请求和文件详情采样统一改为 1 秒，保留异步采集实现。本版本只构建 APK，不运行测试或 lint。
+
+0.3.7 将高频同步原生查询改为异步状态/统计回调，每种请求最多一份在途；保留未发生变化的任务，删除时清除缓存。文件详情运行在独立执行器，恢复文件写盘也移出原生 alert 回调。总速度和任务速度按原生采样时间与累计字节差计算，不再额外采用 SessionStats 平滑速率；进度采用原生准确计数（包含部分区块），移除 payload 累加估计。文件详情的已下载量格式统一为 KiB 整数、MiB 一位、GiB 两位。
+
+新日志字段：`stateReplyMs/statsReplyMs` 为请求到处理回调的耗时；`stateAgeMs/statsAgeMs` 为最近回调距今时间；`statePendingMs/statsPendingMs` 为未完成请求等待时间；`stateConvertMs` 为快照转换耗时；`detailsQueryMs` 为独立详情查询耗时；`stateFrames/statsFrames` 为累计回调数。它们替代旧版整轮 `queryMs`，用于区分原生响应慢、数据处理慢和详情查询慢。磁盘后端保留 POSIX 兼容模式，默认 mmap 的 Android FUSE 崩溃试验没有纳入成品。
 
 0.3.6 将任务列表、详情、通知以及后台状态采样周期统一为 500ms；仍合并事件刷新并在离开页面时停止渲染。设置 → 运行诊断中可选择日志目录或恢复默认。默认目录是应用外部文件目录下的 `logs`，自定义目录下创建 `qBittorrent-Mobile-Logs` 子目录；更换目录不移动/删除原日志。
 

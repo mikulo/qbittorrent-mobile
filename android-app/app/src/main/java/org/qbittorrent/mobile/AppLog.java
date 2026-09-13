@@ -51,7 +51,7 @@ final class AppLog {
             if (previous != null) previous.uncaughtException(thread, error);
             else { Process.killProcess(Process.myPid()); System.exit(10); }
         });
-        info("app_start version=0.3.6 " + android.os.Build.MANUFACTURER + " "
+        info("app_start version=0.3.8 " + android.os.Build.MANUFACTURER + " "
                 + android.os.Build.MODEL + " Android=" + android.os.Build.VERSION.RELEASE);
     }
 

@@ -16,7 +16,7 @@ import java.util.Locale;
 
 public final class TorrentDetailActivity extends AppCompatActivity implements TorrentEngine.Listener {
     public static final String EXTRA_HASH = "torrent_hash";
-    private final UiRefresh refresh = new UiRefresh(500, this::render);
+    private final UiRefresh refresh = new UiRefresh(1000, this::render);
     private TorrentEngine engine;
     private String hash;
     private TextView name, stats, files, trackers;
@@ -84,7 +84,8 @@ public final class TorrentDetailActivity extends AppCompatActivity implements To
         }
         List<String> fileItems = engine.files(hash);
         setTextIfChanged(files, fileItems.isEmpty() ? "等待元数据…" : join(fileItems));
-        setTextIfChanged(trackers, item.trackers.isEmpty() ? "无 Tracker（可能为 DHT 任务）" : join(item.trackers));
+        List<String> trackerItems = engine.trackers(hash);
+        setTextIfChanged(trackers, trackerItems.isEmpty() ? "无 Tracker（可能为 DHT 任务）" : join(trackerItems));
     }
 
     private void setTextIfChanged(TextView view, String text) {

@@ -50,7 +50,7 @@ public final class MainActivity extends AppCompatActivity implements TorrentEngi
                 if (!granted) Toast.makeText(this, R.string.notification_permission, Toast.LENGTH_LONG).show();
             });
 
-    private final UiRefresh refresh = new UiRefresh(500, this::render);
+    private final UiRefresh refresh = new UiRefresh(1000, this::render);
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);

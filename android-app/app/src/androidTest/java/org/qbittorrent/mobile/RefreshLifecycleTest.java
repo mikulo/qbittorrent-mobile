@@ -45,20 +45,20 @@ public final class RefreshLifecycleTest extends ActivityInstrumentationTestCase2
         });
     }
 
-    public void testHalfSecondRefreshCadence() throws Throwable {
+    public void testOneSecondRefreshCadence() throws Throwable {
         getActivity();
         java.util.List<Long> times = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(5);
-        UiRefresh refresh = new UiRefresh(500, () -> {
+        UiRefresh refresh = new UiRefresh(1000, () -> {
             times.add(android.os.SystemClock.elapsedRealtime());
             done.countDown();
         });
         try {
             runTestOnUiThread(refresh::start);
-            assertTrue(done.await(4, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(done.await(7, java.util.concurrent.TimeUnit.SECONDS));
             for (int i = 1; i < 5; i++) {
                 long interval = times.get(i) - times.get(i - 1);
-                assertTrue("refresh interval=" + interval, interval >= 450 && interval < 800);
+                assertTrue("refresh interval=" + interval, interval >= 900 && interval < 1400);
             }
         } finally { runTestOnUiThread(refresh::stop); }
     }

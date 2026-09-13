@@ -1,10 +1,36 @@
 # qBittorrent Mobile 项目交接文档
 
-> 面向下一位接手的 AI / 开发者。基线核对日期：2026-09-13；当前 Android 版本：0.3.6（versionCode 11）。
+> 面向下一位接手的 AI / 开发者。核对日期：2026-09-13；当前 Android 版本：0.3.8（versionCode 13）。最新增量见下文，历史章节不代表当前刷新周期。
+
+## 0.3.8 最新补记
+
+- 用户确认 0.3.7 可以正常使用，要求将刷新周期改为 1 秒，直接生成 APK、不测试并更新 GitHub。
+- 已将 MainActivity、TorrentDetailActivity、TorrentService 的 UiRefresh，TorrentEngine 的状态与文件详情定时器，以及 StateRequestGate 的请求间隔全部改为 1000ms。保留异步状态/统计、原生时间戳速率、独立详情读取和检查点写入，不退回旧同步查询。
+- 本轮仅执行 assembleDebug；未运行单元测试、instrumentation 或 lint。测试代码中与周期绑定的预期同步调整，但未执行。
+- 当前包为 `android-app/artifacts/qBittorrent-Mobile-0.3.8-universal-debug.apk`。GitHub 更新包含之前尚未推送的 0.3.7 修复与本次 1 秒调整；不提交 APK、私有输入、原始日志或凭据。
 >
 > 本文依据当前本地源码、构建文件、已有 QA 记录和用户反馈整理。**“源码已实现”“历史测试通过”“用户真机已确认”是不同证据等级，不可混用。** 本次工作只整理文档，没有重新运行全部构建、网络下载或真机测试，也没有修改应用逻辑。
 
 > 公开发布补记：后续应以根目录 Git 仓库管理 Android 源码与文档，官方目录使用固定提交的子模块。私有输入、日志、缓存、旧截图和 APK 不进入公开 Git 历史。下文机器路径、历史包和测试输入属于原维护环境记录，不保证在新克隆中存在；请同时阅读根目录 [README](README.md)。
+
+## 0. 0.3.7 接手补记（优先于下文 0.3.6 历史基线）
+
+- 当前修复版本是 **0.3.7 / versionCode 12**；第 3 节的 0.3.6 包大小和哈希属于历史产物，勿用于核对新包。
+- 用户日志确认：有 1 个下载任务时，12 条整轮查询记录耗时 1,816–10,396ms，平均 5,753.8ms；删除任务后约 0–4ms。只改 UI 计时器不能解决采集串行等待。
+- 高频路径现为：500ms 异步 `post_torrent_updates` / `post_session_stats` → alert 线程读取数据包中的值 → 发布 Java 快照。不能重新加入 get_torrents/getName/savePath/status 等逐字段同步查询。
+- `StateRequestGate` 同时约束应用定时器和 SessionManager 自带请求，每种最多一份在途；未收到回调时不重复堆积请求。日志的 pending age 可用于识别无回调/卡住。
+- 状态 alert 是增量，空更新不表示删除全部任务。`activeHashes` 只注册正式任务；`states` 保留未变化行；删除清除状态和速率基线；元数据临时任务不进正式列表。
+- `TransferRate` 按原生 alert 时间戳与累计字节差计算：会话为总传输，任务为 payload；处理初次采样、暂停计数器归零、重复/倒退时间戳。没有再套用 libtorrent4j 的五点平滑。
+- 请求 `QUERY_ACCURATE_DOWNLOAD_COUNTERS/QUERY_NAME/QUERY_SAVE_PATH`，不请求大 Piece 位图。只在回调期间读 native 数据，不跨回调保留 borrowed 指针。
+- `LiveProgress` 已移除，不能继续将 payload 增量当作有效完成量。部分区块进度来自 native 准确计数，是否完成由 native 状态决定。
+- `detailPoller` 独立查询文件/Tracker/限速，不阻塞状态缓存发布；详情进度格式改用 downloadedBytes。`checkpointWriter` 独立写恢复文件，alert 内只序列化/复制数据；恢复请求按 hash 合并直到写盘结束。
+- **磁盘仍为 POSIX**。曾试用默认 mmap，在 Android 14 和 Android 17 模拟器共享存储复现系统 MediaProvider/FUSE abort，导致应用被终止；已撤回，不得将其描述为已完成的磁盘后端优化。
+- 新诊断字段见 Android README：响应耗时、回调年龄、在途请求年龄、转换耗时、详情耗时、累计回调数；旧 `queryMs` 不能与这些字段直接混为一项。
+- 新建专用 `QBMobile_API34` AVD，使用现有 `system-images;android-34;google_apis;x86_64` 镜像，仍固定 `emulator-5554`。不要操作 `DSH_Pixel34` 或真机；`Pixel_10_Pro` 是 API 37.1/Android 17 预览镜像，而不是 Android 14。
+- 新增 4 项 JVM 速率/请求队列测试，以及本机 BT 实传 instrumentation `TransferPipelineTest`。具体通过/失败结果以 QA 最新记录为准，不能把旧计时器回调测试当作真实数据刷新证明。
+- 最终完整回归：4 项 JVM + 6 项 instrumentation 通过，含实际上传、任务卡片文字变化、暂停及删除。10 秒采样收到 20 次统计，最大状态/统计采样年龄 497/496ms；限速传输字节变化最大间隔仍为 2,031ms，不能将“每半秒采样”等同于“每半秒必然下载新字节”。详细失败尝试和测试修正见 `android-app/docs/QA.md`。
+- 0.3.7 本地 APK：`android-app/artifacts/qBittorrent-Mobile-0.3.7-universal-debug.apk`，32,318,866 字节，与 0.3.6 签名相同；本轮修改未自动提交或推送 GitHub。
+- 本次修复不改变客户端网络身份、监听端口、Tracker TLS 设置、用户目录或私有种子内容；FTP 原始日志未写入仓库。本地完成修复不等于已经推送 GitHub。
 
 ## 目录
 

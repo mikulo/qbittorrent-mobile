@@ -18,7 +18,7 @@ public final class TorrentService extends Service implements TorrentEngine.Liste
     private static final int NOTIFICATION_ID = 5300;
     private TorrentEngine engine;
 
-    private final UiRefresh update = new UiRefresh(500, this::updateNotification);
+    private final UiRefresh update = new UiRefresh(1000, this::updateNotification);
 
     @Override public void onCreate() {
         super.onCreate();

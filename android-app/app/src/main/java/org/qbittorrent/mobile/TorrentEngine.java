@@ -17,6 +17,7 @@ import org.libtorrent4j.Priority;
 import org.libtorrent4j.SessionManager;
 import org.libtorrent4j.SessionParams;
 import org.libtorrent4j.SettingsPack;
+import org.libtorrent4j.StatsMetric;
 import org.libtorrent4j.Sha1Hash;
 import org.libtorrent4j.TorrentFlags;
 import org.libtorrent4j.TorrentHandle;
@@ -31,6 +32,10 @@ import org.libtorrent4j.alerts.TrackerReplyAlert;
 import org.libtorrent4j.alerts.TrackerWarningAlert;
 import org.libtorrent4j.alerts.SaveResumeDataAlert;
 import org.libtorrent4j.alerts.SaveResumeDataFailedAlert;
+import org.libtorrent4j.alerts.StateUpdateAlert;
+import org.libtorrent4j.alerts.SessionStatsAlert;
+import org.libtorrent4j.swig.status_flags_t;
+import org.libtorrent4j.swig.torrent_status_vector;
 import org.libtorrent4j.swig.remove_flags_t;
 import org.libtorrent4j.swig.add_torrent_params;
 import org.libtorrent4j.swig.error_code;
@@ -51,6 +56,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -95,10 +101,24 @@ public final class TorrentEngine {
     private final ScheduledExecutorService metadataPoller = Executors.newSingleThreadScheduledExecutor();
     private final ScheduledExecutorService statePoller = Executors.newSingleThreadScheduledExecutor(
             task -> new Thread(task, "torrent-state"));
+    private final ScheduledExecutorService detailPoller = Executors.newSingleThreadScheduledExecutor(
+            task -> new Thread(task, "torrent-details"));
+    private final ExecutorService checkpointWriter = Executors.newSingleThreadExecutor(
+            task -> new Thread(task, "torrent-checkpoints"));
+    private final StateRequestGate stateRequests = new StateRequestGate();
+    private final StateRequestGate statsRequests = new StateRequestGate();
+    private final Object stateLock = new Object();
+    private final Set<String> activeHashes = ConcurrentHashMap.newKeySet();
+    private final Map<String, TorrentSnapshot> states = new LinkedHashMap<>();
+    private final Map<String, TransferRate[]> torrentRates = new HashMap<>();
+    private final TransferRate sessionDownload = new TransferRate(), sessionUpload = new TransferRate();
     private volatile List<TorrentSnapshot> cachedSnapshots = Collections.emptyList();
     private volatile Map<String, DetailState> cachedDetails = Collections.emptyMap();
     private final Set<String> detailWatches = ConcurrentHashMap.newKeySet();
     private volatile long cachedDownloadRate, cachedUploadRate;
+    private volatile long lastStateAt, lastStatsAt, stateLatencyMs, statsLatencyMs, stateConvertMs, detailsQueryMs;
+    private volatile long stateFrameCount, statsFrameCount;
+    private volatile long lastDetailWarning;
     private long lastHealthLog;
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
     private final Map<String, PendingTorrent> pendingTorrents = new ConcurrentHashMap<>();
@@ -107,7 +127,6 @@ public final class TorrentEngine {
     private final Set<String> resumeRequests = ConcurrentHashMap.newKeySet();
     private final Object resumeSaveMonitor = new Object();
     private final ConcurrentHashMap<String, String> trackerMessages = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, LiveProgress> liveProgress = new ConcurrentHashMap<>();
     private final Object lock = new Object();
     private volatile SessionManager manager;
     private volatile boolean starting;
@@ -289,11 +308,32 @@ public final class TorrentEngine {
 
             SessionParams params = loadSessionParams();
             params.setSettings(pack);
+            // Retain Android's working POSIX backend: the bundled mmap backend triggered
+            // MediaProvider/FUSE process aborts on API 34 and 37 emulator shared storage.
+            // Remove serial status round-trips instead of trading freshness for data-path crashes.
             params.setPosixDiskIO();
-            manager = new SessionManager(false);
+            manager = new SessionManager(false) {
+                // SessionManager also requests stats itself. Route BOTH callers through gates,
+                // so a busy native session cannot accumulate an unbounded request backlog.
+                @Override public void postTorrentUpdates() {
+                    if (!isRunning() || !stateRequests.request(android.os.SystemClock.elapsedRealtime())) return;
+                    status_flags_t flags = TorrentHandle.QUERY_ACCURATE_DOWNLOAD_COUNTERS
+                            .or_(TorrentHandle.QUERY_NAME).or_(TorrentHandle.QUERY_SAVE_PATH);
+                    try { swig().post_torrent_updates(flags); }
+                    catch (RuntimeException error) { stateRequests.complete(android.os.SystemClock.elapsedRealtime()); throw error; }
+                    finally { flags.delete(); }
+                }
+                @Override public void postSessionStats() {
+                    if (!isRunning() || !statsRequests.request(android.os.SystemClock.elapsedRealtime())) return;
+                    try { super.postSessionStats(); }
+                    catch (RuntimeException error) { statsRequests.complete(android.os.SystemClock.elapsedRealtime()); throw error; }
+                }
+            };
             manager.addListener(new AlertListener() {
                 @Override public int[] types() {
                     return new int[] {
+                            AlertType.STATE_UPDATE.swig(),
+                            AlertType.SESSION_STATS.swig(),
                             AlertType.TRACKER_ANNOUNCE.swig(),
                             AlertType.TRACKER_REPLY.swig(),
                             AlertType.TRACKER_WARNING.swig(),
@@ -305,14 +345,25 @@ public final class TorrentEngine {
                 }
 
                 @Override public void alert(Alert<?> alert) {
+                    if (alert instanceof StateUpdateAlert) {
+                        acceptStateUpdate((StateUpdateAlert) alert);
+                        return;
+                    }
+                    if (alert instanceof SessionStatsAlert) {
+                        acceptSessionStats((SessionStatsAlert) alert);
+                        return;
+                    }
+                    // Copy resume bytes while the alert is alive; never fsync on this thread.
+                    if (alert instanceof SaveResumeDataAlert) {
+                        SaveResumeDataAlert saved = (SaveResumeDataAlert) alert;
+                        saveResumeAlert(saved.params().getInfoHashes().getBest().toHex(), saved);
+                        return;
+                    }
                     if (!(alert instanceof org.libtorrent4j.alerts.TorrentAlert)) return;
                     TorrentHandle handle = ((org.libtorrent4j.alerts.TorrentAlert<?>) alert).handle();
                     if (handle == null || !handle.isValid()) return;
                     String hash = handle.infoHash().toHex();
-                    if (alert instanceof SaveResumeDataAlert) {
-                        saveResumeAlert(hash, (SaveResumeDataAlert) alert);
-                        return;
-                    } else if (alert instanceof SaveResumeDataFailedAlert) {
+                    if (alert instanceof SaveResumeDataFailedAlert) {
                         finishResumeRequest(hash);
                         return;
                     } else if (alert.type() == AlertType.TORRENT_FINISHED) {
@@ -338,6 +389,7 @@ public final class TorrentEngine {
             });
             manager.start(params);
             AppLog.info("engine_started libtorrent=" + backendVersion());
+            AppLog.info("disk_backend=posix_compatible process64=" + android.os.Process.is64Bit());
             if (prefBoolean("dht", true) && !manager.isDhtRunning()) manager.startDht();
             startResumeTimer();
         }
@@ -350,9 +402,9 @@ public final class TorrentEngine {
                 RESUME_SAVE_INTERVAL_SECONDS, RESUME_SAVE_INTERVAL_SECONDS, TimeUnit.SECONDS);
         metadataPoller.scheduleAtFixedRate(this::saveSessionState,
                 SESSION_SAVE_INTERVAL_SECONDS, SESSION_SAVE_INTERVAL_SECONDS, TimeUnit.SECONDS);
-        // Synchronous libtorrent getters can wait on the native session thread. Never call
-        // them from Activity/Service rendering. Fixed delay also bounds work when a query is slow.
-        statePoller.scheduleWithFixedDelay(this::refreshState, 0, 500, TimeUnit.MILLISECONDS);
+        // This timer only posts asynchronous requests; no get_torrents/status/files here.
+        statePoller.scheduleWithFixedDelay(this::refreshState, 0, 1000, TimeUnit.MILLISECONDS);
+        detailPoller.scheduleWithFixedDelay(this::refreshDetails, 0, 1000, TimeUnit.MILLISECONDS);
     }
 
     private File sessionStateFile() {
@@ -409,12 +461,14 @@ public final class TorrentEngine {
         if (value == null || !value.isRunning()) return;
         try {
             torrent_handle_vector handles = value.swig().get_torrents();
-            for (int i = 0; i < handles.size(); i++) {
-                TorrentHandle handle = new TorrentHandle(handles.get(i));
-                if (handle.isValid() && !pendingHashes.contains(handle.infoHash().toHex())) {
-                    requestResumeData(handle, includeUnmodified);
+            try {
+                for (int i = 0; i < handles.size(); i++) {
+                    TorrentHandle handle = new TorrentHandle(handles.get(i));
+                    if (handle.isValid() && !pendingHashes.contains(handle.infoHash().toHex())) {
+                        requestResumeData(handle, includeUnmodified);
+                    }
                 }
-            }
+            } finally { handles.delete(); }
         } catch (Throwable ignored) {}
     }
 
@@ -422,7 +476,7 @@ public final class TorrentEngine {
         String hash = "";
         try {
             hash = handle.infoHash().toHex();
-            resumeRequests.add(hash);
+            if (!resumeRequests.add(hash)) return;
             if (includeUnmodified) handle.saveResumeData(TorrentHandle.SAVE_INFO_DICT);
             else handle.saveResumeData(TorrentHandle.SAVE_INFO_DICT.or_(TorrentHandle.ONLY_IF_MODIFIED));
         } catch (Throwable ignored) {
@@ -433,6 +487,17 @@ public final class TorrentEngine {
     private void saveResumeAlert(String hash, SaveResumeDataAlert alert) {
         try {
             byte[] bytes = AddTorrentParams.writeResumeDataBuf(alert.params());
+            checkpointWriter.execute(() -> writeResumeCheckpoint(hash, bytes));
+        } catch (Throwable error) {
+            finishResumeRequest(hash);
+            AppLog.error("resume_serialize_failed", error);
+        }
+    }
+
+    private void writeResumeCheckpoint(String hash, byte[] bytes) {
+        long started = android.os.SystemClock.elapsedRealtime();
+        try {
+            if (!activeHashes.contains(hash)) return;
             File destination = resumeFile(hash);
             File temporary = new File(destination.getParentFile(), destination.getName() + ".tmp");
             try (FileOutputStream output = new FileOutputStream(temporary, false)) {
@@ -444,7 +509,7 @@ public final class TorrentEngine {
                     java.nio.file.StandardCopyOption.ATOMIC_MOVE,
                     java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             Log.i(TAG, "Saved torrent fastresume checkpoint");
-            AppLog.info("fastresume_saved");
+            AppLog.info("fastresume_saved writeMs=" + (android.os.SystemClock.elapsedRealtime() - started));
         } catch (Throwable error) {
             notifyError(message(error, "Cannot save resume data"));
         } finally {
@@ -731,6 +796,8 @@ public final class TorrentEngine {
                     hash = addTorrentParams(pending.params, false);
                     handle = find(hash);
                 }
+                activeHashes.add(hash);
+                if (handle != null) handle.setFlags(TorrentFlags.UPDATE_SUBSCRIBE);
                 pendingHashes.remove(hash);
                 rememberSource(hash, pending.type, pending.source, false, priorities, downloadLimit, uploadLimit);
                 if (handle != null) requestResumeData(handle, true);
@@ -882,26 +949,13 @@ public final class TorrentEngine {
     }
 
     private void refreshState() {
-        long started = android.os.SystemClock.elapsedRealtime();
         try {
-            List<TorrentSnapshot> next = readSnapshots();
-            Map<String, DetailState> details = new HashMap<>();
-            for (String hash : detailWatches) {
-                TorrentHandle handle = find(hash);
-                if (handle == null) continue;
-                details.put(hash, new DetailState(readFiles(hash),
-                        Math.max(0, handle.getDownloadLimit() / 1024),
-                        Math.max(0, handle.getUploadLimit() / 1024)));
-            }
-            cachedDetails = Collections.unmodifiableMap(details);
-            cachedSnapshots = Collections.unmodifiableList(next);
             SessionManager value = manager;
-            if (value != null) value.postSessionStats();
-            cachedDownloadRate = value == null ? 0 : value.downloadRate();
-            cachedUploadRate = value == null ? 0 : value.uploadRate();
+            if (value != null) { value.postTorrentUpdates(); value.postSessionStats(); }
             long now = android.os.SystemClock.elapsedRealtime();
             if (now - lastHealthLog >= 10000) {
                 lastHealthLog = now;
+                List<TorrentSnapshot> next = cachedSnapshots;
                 int peers = 0, seeds = 0;
                 for (TorrentSnapshot item : next) { peers += item.peers; seeds += item.seeds; }
                 Runtime runtime = Runtime.getRuntime();
@@ -909,27 +963,70 @@ public final class TorrentEngine {
                         + " downBps=" + cachedDownloadRate + " upBps=" + cachedUploadRate
                         + " javaBytes=" + (runtime.totalMemory() - runtime.freeMemory())
                         + " nativeBytes=" + android.os.Debug.getNativeHeapAllocatedSize()
-                        + " queryMs=" + (now - started));
+                        + " stateAgeMs=" + (lastStateAt == 0 ? -1 : now - lastStateAt)
+                        + " statsAgeMs=" + (lastStatsAt == 0 ? -1 : now - lastStatsAt)
+                        + " stateReplyMs=" + stateLatencyMs + " statsReplyMs=" + statsLatencyMs
+                        + " statePendingMs=" + stateRequests.pendingAge(now)
+                        + " statsPendingMs=" + statsRequests.pendingAge(now)
+                        + " stateConvertMs=" + stateConvertMs + " detailsQueryMs=" + detailsQueryMs
+                        + " stateFrames=" + stateFrameCount + " statsFrames=" + statsFrameCount);
             }
         } catch (Exception error) {
-            // Keep the previous valid frame. Never turn a failed poll into a toast/event storm.
-            Log.w(TAG, "Cannot refresh transfer state", error);
-            AppLog.error("state_refresh_failed", error);
+            AppLog.error("state_request_failed", error);
         }
     }
 
-    private List<TorrentSnapshot> readSnapshots() {
-        ArrayList<TorrentSnapshot> result = new ArrayList<>();
-        SessionManager value = manager;
-        if (value == null || !value.isRunning()) return result;
-        torrent_handle_vector handles = value.swig().get_torrents();
+    private void acceptStateUpdate(StateUpdateAlert alert) {
+        long start = android.os.SystemClock.elapsedRealtime();
+        // This vector and its elements belong to the alert/copy wrappers. Read and release
+        // them inside the callback; only immutable Java values survive the callback.
+        torrent_status_vector updates = alert.swig().getStatus();
         try {
-            for (int i = 0; i < handles.size(); i++) {
-                TorrentHandle handle = new TorrentHandle(handles.get(i));
-                if (!pendingHashes.contains(handle.infoHash().toHex())) result.add(snapshot(handle));
+            synchronized (stateLock) {
+                for (int i = 0; i < updates.size(); i++) {
+                    TorrentStatus status = new TorrentStatus(updates.get(i));
+                    try {
+                        String hash = status.getInfoHashes().getBest().toHex();
+                        if (activeHashes.contains(hash)) states.put(hash, snapshot(hash, status, alert.timestamp()));
+                    } finally { status.swig().delete(); }
+                }
+                // StateUpdateAlert is a DELTA, including empty deltas. Keep unchanged tasks.
+                publishSnapshots();
             }
-        } finally { handles.delete(); }
-        return result;
+            lastStateAt = android.os.SystemClock.elapsedRealtime();
+            stateFrameCount++;
+        } catch (Exception error) {
+            AppLog.error("state_conversion_failed", error);
+        } finally {
+            updates.delete();
+            long now = android.os.SystemClock.elapsedRealtime();
+            stateLatencyMs = stateRequests.complete(now);
+            stateConvertMs = now - start;
+        }
+    }
+
+    private void acceptSessionStats(SessionStatsAlert alert) {
+        try {
+            long received = alert.value(StatsMetric.NET_RECV_BYTES_COUNTER_INDEX)
+                    + alert.value(StatsMetric.NET_RECV_IP_OVERHEAD_BYTES_COUNTER_INDEX);
+            long sent = alert.value(StatsMetric.NET_SENT_BYTES_COUNTER_INDEX)
+                    + alert.value(StatsMetric.NET_SENT_IP_OVERHEAD_BYTES_COUNTER_INDEX);
+            cachedDownloadRate = sessionDownload.sample(received, alert.timestamp());
+            cachedUploadRate = sessionUpload.sample(sent, alert.timestamp());
+            lastStatsAt = android.os.SystemClock.elapsedRealtime();
+            statsFrameCount++;
+        } catch (Exception error) {
+            AppLog.error("stats_conversion_failed", error);
+        } finally { statsLatencyMs = statsRequests.complete(android.os.SystemClock.elapsedRealtime()); }
+    }
+
+    // Call with stateLock held. No native calls, IO or listener dispatch under this lock.
+    private void publishSnapshots() {
+        ArrayList<TorrentSnapshot> next = new ArrayList<>();
+        for (TorrentSnapshot item : states.values()) {
+            if (activeHashes.contains(item.hash) && !pendingHashes.contains(item.hash)) next.add(item);
+        }
+        cachedSnapshots = Collections.unmodifiableList(next);
     }
 
     public TorrentSnapshot snapshot(String hash) {
@@ -937,18 +1034,10 @@ public final class TorrentEngine {
         return null;
     }
 
-    private TorrentSnapshot snapshot(TorrentHandle handle) {
-        TorrentStatus status = handle.status();
-        try { return snapshot(handle, status); }
-        finally { status.swig().delete(); }
-    }
-
-    private TorrentSnapshot snapshot(TorrentHandle handle, TorrentStatus status) {
-        String hash = handle.infoHash().toHex();
-        String displayName = handle.getName();
-        if (displayName == null || displayName.trim().isEmpty()) displayName = status.name();
+    private TorrentSnapshot snapshot(String hash, TorrentStatus status, long sampleMillis) {
+        String displayName = status.name();
         if (displayName == null || displayName.trim().isEmpty()) displayName = hash;
-        boolean paused = handle.getFlags().and_(TorrentFlags.PAUSED).non_zero();
+        boolean paused = status.flags().and_(TorrentFlags.PAUSED).non_zero();
         TorrentSnapshot.Group group;
         String state = status.state().name().replace('_', ' ').toLowerCase(Locale.ROOT);
         if (status.errorCode().isError()) group = TorrentSnapshot.Group.ERROR;
@@ -956,20 +1045,61 @@ public final class TorrentEngine {
         else if (status.isSeeding() || status.isFinished()) group = TorrentSnapshot.Group.SEEDING;
         else if (state.contains("check")) group = TorrentSnapshot.Group.CHECKING;
         else group = TorrentSnapshot.Group.DOWNLOADING;
-        long completed = liveCompleted(hash, status);
+        // Native accurate counters include partial blocks; payload totals include retransmits
+        // and must NOT be added to completion as the previous LiveProgress estimator did.
+        long completed = Math.max(0, Math.min(status.totalWanted(), status.totalWantedDone()));
         long remaining = Math.max(0, status.totalWanted() - completed);
-        long eta = status.downloadRate() > 0 ? remaining / status.downloadRate() : -1;
-        ArrayList<String> trackers = new ArrayList<>();
-        if (detailWatches.contains(hash)) try {
-            for (AnnounceEntry entry : handle.trackers()) trackers.add(entry.url());
-        } catch (Throwable ignored) {}
-        String trackerMessage = trackerMessages.get(hash);
-        if (trackerMessage != null && !trackerMessage.isEmpty()) trackers.add("状态：" + trackerMessage);
+        TransferRate[] rates = torrentRates.computeIfAbsent(hash,
+                ignored -> new TransferRate[]{new TransferRate(), new TransferRate()});
+        long download = rates[0].sample(status.totalPayloadDownload(), sampleMillis);
+        long upload = rates[1].sample(status.totalPayloadUpload(), sampleMillis);
+        if (paused || group == TorrentSnapshot.Group.CHECKING || group == TorrentSnapshot.Group.ERROR) {
+            download = 0; upload = 0;
+        }
+        long eta = download > 0 ? remaining / download : -1;
         float preciseProgress = status.totalWanted() > 0
                 ? (float) ((double) completed / status.totalWanted()) : status.progress();
         return new TorrentSnapshot(hash, displayName, preciseProgress,
-                status.totalWanted(), completed, status.downloadRate(), status.uploadRate(),
-                status.allTimeUpload(), status.numSeeds(), status.numPeers(), eta, state, handle.savePath(), group, trackers);
+                status.totalWanted(), completed, download, upload,
+                status.allTimeUpload(), status.numSeeds(), status.numPeers(), eta, state,
+                status.swig().getSave_path(), group, trackers(hash));
+    }
+
+    private void refreshDetails() {
+        long started = android.os.SystemClock.elapsedRealtime();
+        try {
+            Map<String, DetailState> details = new HashMap<>();
+            for (String hash : detailWatches) {
+                if (!activeHashes.contains(hash)) continue;
+                TorrentHandle handle = find(hash);
+                if (handle == null) continue;
+                ArrayList<String> trackers = new ArrayList<>();
+                for (AnnounceEntry entry : handle.trackers()) trackers.add(entry.url());
+                DetailState state = new DetailState(readFiles(handle),
+                        Math.max(0, handle.getDownloadLimit() / 1024),
+                        Math.max(0, handle.getUploadLimit() / 1024), trackers);
+                if (detailWatches.contains(hash) && activeHashes.contains(hash)) details.put(hash, state);
+            }
+            cachedDetails = Collections.unmodifiableMap(details);
+        } catch (Exception error) {
+            AppLog.error("details_refresh_failed", error);
+        } finally {
+            long now = android.os.SystemClock.elapsedRealtime();
+            detailsQueryMs = now - started;
+            if (detailsQueryMs > 1000 && now - lastDetailWarning > 10000) {
+                lastDetailWarning = now;
+                AppLog.warn("slow_details queryMs=" + detailsQueryMs + " watches=" + detailWatches.size());
+            }
+        }
+    }
+
+    public List<String> trackers(String hash) {
+        ArrayList<String> lines = new ArrayList<>();
+        DetailState details = cachedDetails.get(hash);
+        if (details != null) lines.addAll(details.trackers);
+        String message = trackerMessages.get(hash);
+        if (message != null && !message.isEmpty()) lines.add("状态：" + message);
+        return lines;
     }
 
     public List<String> files(String hash) {
@@ -981,20 +1111,27 @@ public final class TorrentEngine {
     public void unwatchDetails(String hash) { detailWatches.remove(hash); }
     public boolean hasDetails(String hash) { return cachedDetails.containsKey(hash); }
 
-    private List<String> readFiles(String hash) {
+    private List<String> readFiles(TorrentHandle handle) {
         ArrayList<String> files = new ArrayList<>();
-        TorrentHandle handle = find(hash);
-        if (handle == null) return files;
+        TorrentInfo info = null;
+        FileStorage storage = null;
+        org.libtorrent4j.swig.int64_vector progress = new org.libtorrent4j.swig.int64_vector();
         try {
-            TorrentInfo info = handle.torrentFile();
+            info = handle.torrentFile();
             if (info == null || !info.isValid()) return files;
-            FileStorage storage = info.files();
-            long[] progress = handle.fileProgress();
+            storage = info.files();
+            handle.swig().file_progress(progress);
             for (int i = 0; i < storage.numFiles(); i++) {
-                long done = i < progress.length ? progress[i] : 0;
-                files.add(storage.filePath(i) + "\n" + Formatters.bytes(done) + " / " + Formatters.bytes(storage.fileSize(i)));
+                long done = i < progress.size() ? progress.get(i) : 0;
+                files.add(storage.filePath(i) + "\n" + Formatters.downloadedBytes(done) + " / " + Formatters.bytes(storage.fileSize(i)));
             }
-        } catch (Throwable ignored) {}
+        } catch (Exception error) {
+            AppLog.error("file_progress_failed", error);
+        } finally {
+            progress.delete();
+            if (storage != null) storage.swig().delete();
+            if (info != null) info.swig().delete();
+        }
         return files;
     }
 
@@ -1054,8 +1191,16 @@ public final class TorrentEngine {
                 else manager.remove(handle, new remove_flags_t());
             }
             forgetSource(hash);
-            liveProgress.remove(hash);
-            try { resumeFile(hash).delete(); } catch (Throwable ignored) {}
+            synchronized (stateLock) {
+                activeHashes.remove(hash);
+                states.remove(hash);
+                torrentRates.remove(hash);
+                publishSnapshots();
+            }
+            trackerMessages.remove(hash);
+            checkpointWriter.execute(() -> {
+                if (!activeHashes.contains(hash)) try { resumeFile(hash).delete(); } catch (Throwable ignored) {}
+            });
             notifyChanged();
         });
     }
@@ -1153,6 +1298,8 @@ public final class TorrentEngine {
 
         TorrentHandle existing = manager.find(bestHash);
         if (existing != null && existing.isValid()) {
+            activeHashes.add(hash);
+            existing.setFlags(TorrentFlags.UPDATE_SUBSCRIBE);
             setPaused(existing, paused);
             return hash;
         }
@@ -1160,10 +1307,12 @@ public final class TorrentEngine {
         params.setSavePath(downloadDirectory().getAbsolutePath());
         torrent_flags_t flags = params.getFlags().and_(TorrentFlags.AUTO_MANAGED.inv());
         flags = paused ? flags.or_(TorrentFlags.PAUSED) : flags.and_(TorrentFlags.PAUSED.inv());
-        params.setFlags(flags);
+        params.setFlags(flags.or_(TorrentFlags.UPDATE_SUBSCRIBE));
         error_code addError = new error_code();
+        activeHashes.add(hash);
         TorrentHandle handle = new TorrentHandle(manager.swig().add_torrent(params.swig(), addError));
         if (addError.failed()) {
+            activeHashes.remove(hash);
             throw new IllegalStateException("Cannot add torrent: " + addError.message());
         }
         if (handle.isValid()) setPaused(handle, paused);
@@ -1289,10 +1438,11 @@ public final class TorrentEngine {
     public long uploadRate() { return cachedUploadRate; }
 
     private static final class DetailState {
-        final List<String> files;
+        final List<String> files, trackers;
         final int downloadKiB, uploadKiB;
-        DetailState(List<String> files, int downloadKiB, int uploadKiB) {
+        DetailState(List<String> files, int downloadKiB, int uploadKiB, List<String> trackers) {
             this.files = Collections.unmodifiableList(files);
+            this.trackers = Collections.unmodifiableList(trackers);
             this.downloadKiB = downloadKiB;
             this.uploadKiB = uploadKiB;
         }
@@ -1304,35 +1454,7 @@ public final class TorrentEngine {
         for (Listener listener : listeners) listener.onEngineError(message == null ? "Unknown error" : message);
     }
 
-    private long liveCompleted(String hash, TorrentStatus status) {
-        long wanted = Math.max(0, status.totalWanted());
-        long verified = Math.min(wanted, Math.max(0, status.totalWantedDone()));
-        long payload = Math.max(0, status.totalPayloadDownload());
-        LiveProgress value = liveProgress.computeIfAbsent(hash,
-                ignored -> new LiveProgress(verified, payload));
-        synchronized (value) {
-            if (payload < value.lastPayload || verified < value.verified) {
-                value.estimated = verified;
-            } else {
-                value.estimated = Math.min(wanted,
-                        Math.max(verified, value.estimated + (payload - value.lastPayload)));
-            }
-            value.verified = verified;
-            value.lastPayload = payload;
-            return value.estimated;
-        }
-    }
-
     private interface HandleAction { void run(TorrentHandle handle); }
-
-    private static final class LiveProgress {
-        long verified, lastPayload, estimated;
-        LiveProgress(long verified, long payload) {
-            this.verified = verified;
-            this.lastPayload = payload;
-            this.estimated = verified;
-        }
-    }
 
     private static final class PendingTorrent {
         final String id, type, source;
