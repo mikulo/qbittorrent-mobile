@@ -2,7 +2,7 @@
 
 面向手机的 BitTorrent 下载客户端：原生 Android 界面参考 qBittorrent 桌面端和 WebUI，传输层使用 **libtorrent4j / libtorrent**，支持磁力、种子文件、文件选择、限速及后台下载。
 
-**当前源码版本：0.3.8 · Android API 26+ · Java 17 · GPL-3.0-or-later**
+**当前源码版本：0.3.9 · Android API 26+ · Java 17 · GPL-3.0-or-later**
 
 > 本项目不是 qBittorrent 官方 Android 版本，未获得官方背书，也不是把官方 Qt/C++ 客户端整体编译到 Android。官方源码作为独立子模块供行为对照，APK 的应用层是本仓库的 Java 实现。当前处于实验性测试阶段。
 
@@ -11,7 +11,7 @@
 - **HTTPS Tracker 当前不验证服务器证书。** 这是原生 Android 库证书适配尚未解决的安全债务：连接加密不等于能防止中间人攻击，私有 Tracker 的 passkey 可能面临风险。不要把当前版本用于敏感 PT 账户或不可信网络，直到证书验证问题解决。
 - 客户端设置了 qBittorrent 风格的 User-Agent 和 peer-id，但这**不代表官方身份或所有 PT 站兼容**。请遵守站点客户端白名单和使用规则，不要以修改身份来绕过限制。
 - 个别设备切回前台后的卡顿/进程重启仍在排查。已加入缓存刷新和日志诊断，尚不能保证所有设备长期后台稳定。
-- 默认下载到应用专属目录，卸载可能同时移除下载数据。正式使用前请备份重要文件和任务信息。
+- 默认下载到公共 `Download/qbittorrent`。从旧版升级的已有任务保留原目录，其中应用专属目录的文件仍可能随卸载移除。正式使用前请备份重要文件和任务信息。
 
 ## 功能
 
@@ -22,7 +22,7 @@
 | 任务管理 | 暂停/继续、固定删除按钮、可选择删除下载数据、强制校验、立即重新汇报 Tracker |
 | 列表与详情 | 状态筛选、进度、上下行速度、ETA、seeds/peers、文件进度、Tracker 响应和错误 |
 | 恢复 | 持久化手动暂停状态、原生 fast-resume 检查点、DHT 会话状态 |
-| 存储 | 应用专属默认目录、实体共享存储目录选择；变更下载目录会迁移现有任务 |
+| 存储 | 公共 Download/qbittorrent 默认目录、存储授权引导、实体共享存储目录选择；变更下载目录会迁移现有任务 |
 | 网络 | 全局与单任务限速、监听端口、DHT/LSD/UPnP/NAT-PMP、可选 SOCKS5 |
 | 后台 | Android dataSync 前台服务与常驻通知 |
 | 刷新 | 每 1 秒请求异步状态/统计，列表、详情和通知同步采用 1 秒周期；按原生采样时间计算速度；文件详情独立查询；事件合并和离页停止渲染 |
@@ -62,7 +62,7 @@ qbittorrent-mobile/
 
 官方参考提交固定为 `55ded55c696cd149e31faafa6ac65f4811321e0b`。本仓库不重复导入官方 Git 历史，也不修改其许可证。
 
-私有种子、磁力输入文件、认证直链、运行日志、签名密钥、本机配置、缓存和历史 APK **不随公开源码提交**。本次公开的是源码，未附预编译 APK；请自行构建，勿从不明来源安装声称属于本项目的安装包。
+私有种子、磁力输入文件、认证直链、运行日志、签名密钥、本机配置、缓存和历史 APK **不随公开源码提交**。预编译 APK 可从 [GitHub Releases](https://github.com/mikulo/qbittorrent-mobile/releases) 下载，也可以自行构建；勿从不明来源安装声称属于本项目的安装包。
 
 ## 构建
 
@@ -91,7 +91,7 @@ cd android-app
 输出：`android-app/app/build/outputs/apk/debug/app-debug.apk`。
 
 - 包名：`org.qbittorrent.mobile`。
-- 版本：`0.3.8`，versionCode `13`。
+- 版本：`0.3.9`，versionCode `14`。
 - ABI：`arm64-v8a`、`armeabi-v7a`、`x86_64`、`x86`。
 - minSdk 26，compileSdk/targetSdk 34；不代表全部 API/厂商设备已经测试。
 - 使用 Maven 预编译 `libtorrent4j:2.1.0-39` 及对应四个 ABI 库，无需构建官方 Qt 工程。
@@ -105,12 +105,14 @@ Windows 如遇 `Unable to establish loopback connection`，可为 JDK 配置短�
 默认位置通常是：
 
 ```text
-/storage/emulated/0/Android/data/org.qbittorrent.mobile/files/Download
+/storage/emulated/0/Download/qbittorrent
 ```
 
-默认应用专属目录不需要广泛存储权限。自定义目录必须能解析为真实文件路径；原生 libtorrent 不能直接写入任意 `content://` 文档流，云盘/虚拟文档目录不支持。
+即通常的 `/sdcard/Download/qbittorrent`；使用 Android 标准 Downloads 目录（`Download` 首字母大写），不硬编码主用户存储根。自定义目录必须能解析为真实文件路径；原生 libtorrent 不能直接写入任意 `content://` 文档流，云盘/虚拟文档目录不支持。
 
-Android 11+ 自定义共享目录需要按应用引导授予“所有文件访问”权限。**更改下载目录会移动已有任务的数据，不仅影响新增任务。** 移动前检查剩余空间并备份重要文件。
+首次运行需按引导授权：Android 11+ 使用“所有文件访问”特殊权限（范围不限于下载目录），Android 8–10 请求存储运行时权限，Android 10 声明 legacy storage。拒绝后不启动下载引擎、不回退私有目录。实现遵循 [Android 直接文件访问权限说明](https://developer.android.com/training/data-storage/manage-all-files)。公共文件仍受其他应用自身权限约束，可通过文件管理器或系统文件选择器打开。
+
+升级时保留自定义设置与已有任务的原目录，只改变新任务的默认位置。可在设置中点击“恢复默认”，确认迁移到公共目录。**手动更改/恢复下载目录会移动已有任务的数据，不仅影响新增任务。** 每个任务只在原生迁移成功后记录新路径，失败保留旧路径。移动前检查剩余空间并备份重要文件。
 
 通知权限、系统前台服务和厂商电量策略都会影响使用体验；允许后台运行不等于系统永远不会回收进程。fast-resume 可减少不必要的全量校验，但异常退出或文件变更后仍可能需要一致性检查。
 
@@ -146,6 +148,8 @@ peer-id prefix: -qB5230-
 报告问题时请提供版本、设备/Android 版本、复现步骤、发生时间、任务数量和经过脱敏的相关片段。**不要在公开 Issue 上传私有种子、原始磁力、Tracker passkey、Cookie、认证直链或未经检查的完整日志。**
 
 ## 测试与已知限制
+
+0.3.9 默认保存到公共 Download/qbittorrent，增加启动授权流程及每任务下载路径持久化，升级保留旧任务位置。按用户要求仅构建 APK，未运行测试或 lint。
 
 0.3.8 按用户要求将列表、详情、通知、原生状态/统计请求及文件详情采样统一调整为 1 秒，保留 0.3.7 的异步采集修复。本版本仅生成 APK，未运行测试或 lint；历史测试结果不代表 0.3.8 已通过回归。
 

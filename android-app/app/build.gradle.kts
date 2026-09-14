@@ -12,8 +12,8 @@ android {
         applicationId = "org.qbittorrent.mobile"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "0.3.8"
+        versionCode = 14
+        versionName = "0.3.9"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
 
         vectorDrawables.useSupportLibrary = true

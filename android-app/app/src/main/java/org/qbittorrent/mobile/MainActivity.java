@@ -37,6 +37,8 @@ public final class MainActivity extends AppCompatActivity implements TorrentEngi
     private TorrentSnapshot.Group filter;
     private AlertDialog addDialog;
     private TorrentOptionsDialog torrentOptionsDialog;
+    private boolean storageStarted;
+    private final StoragePermission storagePermission = new StoragePermission(this, this::startWithStorage);
 
     private final ActivityResultLauncher<String[]> torrentPicker = registerForActivityResult(
             new ActivityResultContracts.OpenDocument(), uri -> {
@@ -71,15 +73,30 @@ public final class MainActivity extends AppCompatActivity implements TorrentEngi
         findViewById(R.id.filter_seeding).setOnClickListener(v -> { filter = TorrentSnapshot.Group.SEEDING; render(); });
         findViewById(R.id.filter_paused).setOnClickListener(v -> { filter = TorrentSnapshot.Group.PAUSED; render(); });
 
+        if (StoragePermission.hasAccess(this)) startWithStorage();
+        else storagePermission.request();
+    }
+
+    private void startWithStorage() {
+        if (engine == null || storageStarted || !StoragePermission.hasAccess(this)) return;
+        storageStarted = true;
         ContextCompat.startForegroundService(this, new Intent(this, TorrentService.class));
         requestNotificationPermission();
         handleIntent(getIntent());
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        if (!StoragePermission.hasAccess(this)) storageStarted = false;
+        else startWithStorage();
+    }
+
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        handleIntent(intent);
+        if (!StoragePermission.hasAccess(this)) { storageStarted = false; storagePermission.request(); }
+        else if (!storageStarted) startWithStorage();
+        else handleIntent(intent);
     }
 
     @Override protected void onStart() {
@@ -124,6 +141,7 @@ public final class MainActivity extends AppCompatActivity implements TorrentEngi
     }
 
     private void showAddDialog(String initialValue) {
+        if (!StoragePermission.hasAccess(this)) { storagePermission.request(); return; }
         View content = getLayoutInflater().inflate(R.layout.dialog_add, null);
         TextInputEditText input = content.findViewById(R.id.magnet_input);
         if (initialValue != null) input.setText(initialValue);
@@ -151,6 +169,7 @@ public final class MainActivity extends AppCompatActivity implements TorrentEngi
     }
 
     private void prepareTorrent(PrepareAction action) {
+        if (!StoragePermission.hasAccess(this)) { storagePermission.request(); return; }
         final boolean[] cancelled = {false};
         final String[] requestId = {null};
         AlertDialog loading = new AlertDialog.Builder(this)
@@ -189,7 +208,7 @@ public final class MainActivity extends AppCompatActivity implements TorrentEngi
     private void showTorrentOptions(TorrentDraft draft) {
         if (torrentOptionsDialog != null) torrentOptionsDialog.dismiss();
         TorrentOptionsDialog options = new TorrentOptionsDialog(this, draft,
-                engine.downloadDirectory().getAbsolutePath(),
+                engine.configuredDownloadDirectory().getAbsolutePath(),
                 (selected, down, up) -> {
                     engine.commitDraft(draft.id, selected, down, up);
                     Toast.makeText(this, R.string.torrent_added, Toast.LENGTH_SHORT).show();

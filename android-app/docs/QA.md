@@ -1,5 +1,11 @@
 # Build and runtime verification
 
+## Version 0.3.9 public download directory (2026-09-14)
+
+- Default new-task location is Android public Downloads/qbittorrent (normally `/sdcard/Download/qbittorrent`). Custom defaults and existing task locations are preserved during upgrade; explicit reset offers migration confirmation.
+- Added shared storage-permission flow, refusal gating at UI/service/engine startup, Android 10 legacy storage declaration, per-source savePath persistence and native storage-move success/failure handling. Settings path rendering no longer creates/probes directories.
+- `assembleDebug`: BUILD SUCCESSFUL. Per user instruction no tests, emulator execution or lint. Runtime permission acceptance/denial, upgrade, migration, file access from another app and restart behavior remain untested in this version. Future emulator regressions need explicit storage permission setup.
+
 ## Version 0.3.8 one-second refresh (2026-09-13)
 
 - User accepted 0.3.7 and explicitly requested 1-second refresh, APK generation without testing, and a GitHub update.

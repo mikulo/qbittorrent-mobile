@@ -1,6 +1,16 @@
 # qBittorrent Mobile 项目交接文档
 
-> 面向下一位接手的 AI / 开发者。核对日期：2026-09-13；当前 Android 版本：0.3.8（versionCode 13）。最新增量见下文，历史章节不代表当前刷新周期。
+> 面向下一位接手的 AI / 开发者。核对日期：2026-09-14；当前 Android 版本：0.3.9（versionCode 14）。最新增量见下文，历史章节不代表当前下载目录和刷新周期。
+
+## 0.3.9 最新补记
+
+- 新任务默认 `Environment.getExternalStoragePublicDirectory(DIRECTORY_DOWNLOADS)/qbittorrent`，通常为 `/sdcard/Download/qbittorrent`，不再默认写 Android/data。
+- `StoragePermission` 为 MainActivity 和 SettingsActivity 共用授权引导：Android 11+ 特殊权限设置页，Android 8–10 运行时存储权限，拒绝后不启动引擎；Android 10 manifest 增加 requestLegacyExternalStorage。所有文件权限比目录授权范围大，弹窗已说明。设置页授权返回自动继续选择/恢复默认。
+- `configuredDownloadDirectory` 只解析路径用于渲染；`downloadDirectory` 在创建新任务时检查权限并确保目录可写；恢复默认复用后台检查与迁移流程，不在主线程 mkdir。
+- 首次升级保存原任务 `savePath`（迁移标志 public_download_default_v1）；自定义设置不变，新任务采用公共默认目录。restoreSources 按任务 savePath 恢复，不能强制套用新的全局目录，否则旧任务会找不到文件。
+- 手动更改目录由 libtorrent moveStorage 执行，STORAGE_MOVED 成功后保存该任务新路径并请求 fastresume；失败保留原路径并提示。迁移时跳过未确认磁力元数据任务。恢复默认按钮明确确认会移动现有任务文件。
+- 按用户要求只运行 assembleDebug，未启动模拟器、未运行测试或 lint。后续 instrumentation 需先授予存储权限；历史通过结果不能当作 0.3.9 验证。
+- 本地包 `android-app/artifacts/qBittorrent-Mobile-0.3.9-universal-debug.apk`；用户随后要求更新 GitHub，源码及 v0.3.9 Release 同步发布。APK 大小 32,253,425 字节，SHA-256 为 `20ef5466ac5c2befae9659f9c08b71106b3720c8eb2cc791202c650efe26a740`。未追加运行测试。
 
 ## 0.3.8 最新补记
 

@@ -31,18 +31,16 @@ public final class SettingsActivity extends AppCompatActivity implements Torrent
     private TextView downloadPath;
     private TextView logPath;
     private boolean selectingLogDirectory;
+    private int storageAction;
+    private final StoragePermission storagePermission = new StoragePermission(this, this::continueStorageAction);
     private final UiRefresh refresh = new UiRefresh(2500, this::refreshDownloadPath);
     private final ActivityResultLauncher<Uri> directoryPicker = registerForActivityResult(
             new ActivityResultContracts.OpenDocumentTree(), this::onDirectorySelected);
-    private final ActivityResultLauncher<String> legacyStoragePermission = registerForActivityResult(
-            new ActivityResultContracts.RequestPermission(), granted -> {
-                if (granted) directoryPicker.launch(null);
-                else Toast.makeText(this, R.string.storage_permission_required, Toast.LENGTH_LONG).show();
-            });
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         selectingLogDirectory = savedInstanceState != null && savedInstanceState.getBoolean("selectingLogDirectory");
+        storageAction = savedInstanceState == null ? 0 : savedInstanceState.getInt("storageAction");
         setContentView(R.layout.activity_settings);
         setSupportActionBar(findViewById(R.id.toolbar));
         if (getSupportActionBar() != null) getSupportActionBar().setDisplayHomeAsUpEnabled(true);
@@ -80,7 +78,10 @@ public final class SettingsActivity extends AppCompatActivity implements Torrent
         findViewById(R.id.choose_download_path).setOnClickListener(v -> { selectingLogDirectory = false; chooseDownloadDirectory(); });
         findViewById(R.id.choose_log_path).setOnClickListener(v -> { selectingLogDirectory = true; chooseDownloadDirectory(); });
         findViewById(R.id.reset_log_path).setOnClickListener(v -> setLogDirectory(null));
-        findViewById(R.id.reset_download_path).setOnClickListener(v -> engine.resetDownloadDirectory());
+        findViewById(R.id.reset_download_path).setOnClickListener(v -> {
+            storageAction = 1;
+            storagePermission.request();
+        });
         findViewById(R.id.save).setOnClickListener(v -> save());
         ((TextView) findViewById(R.id.process_diagnostics)).setText(ProcessDiagnostics.summary());
     }
@@ -108,6 +109,7 @@ public final class SettingsActivity extends AppCompatActivity implements Torrent
 
     @Override protected void onSaveInstanceState(Bundle state) {
         state.putBoolean("selectingLogDirectory", selectingLogDirectory);
+        state.putInt("storageAction", storageAction);
         super.onSaveInstanceState(state);
     }
 
@@ -120,20 +122,22 @@ public final class SettingsActivity extends AppCompatActivity implements Torrent
     }
 
     private void chooseDownloadDirectory() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-            Intent permission = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                    Uri.parse("package:" + getPackageName()));
-            startActivity(permission);
-            Toast.makeText(this, R.string.enable_all_files_access, Toast.LENGTH_LONG).show();
-            return;
-        }
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q
-                && ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                != PackageManager.PERMISSION_GRANTED) {
-            legacyStoragePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE);
-            return;
-        }
-        directoryPicker.launch(null);
+        storageAction = 2;
+        storagePermission.request();
+    }
+
+    private void continueStorageAction() {
+        int action = storageAction;
+        storageAction = 0;
+        if (action == 1) {
+            new androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("恢复公共下载目录")
+                    .setMessage("默认目录：" + engine.defaultDownloadDirectory().getAbsolutePath()
+                            + "\n将同时把已有任务的文件迁移到此目录。迁移期间请勿退出应用。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("迁移并恢复默认", (dialog, which) -> engine.resetDownloadDirectory())
+                    .show();
+        } else if (action == 2) directoryPicker.launch(null);
     }
 
     private void onDirectorySelected(Uri treeUri) {
@@ -183,7 +187,8 @@ public final class SettingsActivity extends AppCompatActivity implements Torrent
     private void refreshDownloadPath() {
         if (logPath != null) logPath.setText(getString(R.string.log_path_value, AppLog.directorySummary()));
         try {
-            downloadPath.setText(getString(R.string.download_path_value, engine.downloadDirectory().getAbsolutePath()));
+            downloadPath.setText(getString(R.string.download_path_value, engine.configuredDownloadDirectory().getAbsolutePath())
+                    + (StoragePermission.hasAccess(this) ? "" : "\n尚未取得存储权限"));
         } catch (Exception error) {
             downloadPath.setText(getString(R.string.download_path_failed, error.getMessage()));
         }

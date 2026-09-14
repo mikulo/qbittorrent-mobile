@@ -27,11 +27,13 @@ public final class TorrentService extends Service implements TorrentEngine.Liste
         engine = TorrentEngine.get(this);
         engine.addListener(this);
         startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.service_idle)));
+        if (!StoragePermission.hasAccess(this)) { stopSelf(); return; }
         engine.startAsync();
         update.start();
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        if (!StoragePermission.hasAccess(this)) { stopSelf(); return START_NOT_STICKY; }
         engine.startAsync();
         return START_STICKY;
     }

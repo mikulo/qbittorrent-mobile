@@ -135,6 +135,7 @@ public final class TorrentEngine {
     private TorrentEngine(Context context) {
         this.context = context.getApplicationContext();
         preferences = this.context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        preserveExistingDownloadPaths();
     }
 
     public static void initialize(Context context) {
@@ -202,14 +203,44 @@ public final class TorrentEngine {
         }
     }
 
-    public File downloadDirectory() {
-        String customPath = preferences.getString(KEY_DOWNLOAD_PATH, "").trim();
-        File dir;
-        if (!customPath.isEmpty()) dir = new File(customPath);
-        else {
-            dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
-            if (dir == null) dir = new File(context.getFilesDir(), "downloads");
+    public File defaultDownloadDirectory() {
+        return new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "qbittorrent");
+    }
+
+    /** Keep pre-upgrade payloads where they are; only new tasks use the new default. */
+    private void preserveExistingDownloadPaths() {
+        if (preferences.getBoolean("public_download_default_v1", false)) return;
+        try {
+            JSONArray sources = new JSONArray(preferences.getString(KEY_SOURCES, "[]"));
+            String previousPath = preferences.getString(KEY_DOWNLOAD_PATH, "").trim();
+            if (previousPath.isEmpty()) {
+                File previous = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                if (previous == null) previous = new File(context.getFilesDir(), "downloads");
+                previousPath = previous.getAbsolutePath();
+            }
+            for (int i = 0; i < sources.length(); i++) {
+                JSONObject source = sources.getJSONObject(i);
+                if (source.optString("savePath").isEmpty()) source.put("savePath", previousPath);
+            }
+            if (!preferences.edit().putString(KEY_SOURCES, sources.toString())
+                    .putBoolean("public_download_default_v1", true).commit()) {
+                throw new IllegalStateException("无法保存原下载目录，请重试。");
+            }
+        } catch (Exception error) {
+            // Never start against a different directory if migration cannot be persisted.
+            throw new IllegalStateException("无法保留已有任务的下载目录。", error);
         }
+    }
+
+    /** Pure path lookup: rendering must not mkdir or probe storage. */
+    public File configuredDownloadDirectory() {
+        String customPath = preferences.getString(KEY_DOWNLOAD_PATH, "").trim();
+        return customPath.isEmpty() ? defaultDownloadDirectory() : new File(customPath);
+    }
+
+    public File downloadDirectory() {
+        if (!StoragePermission.hasAccess(context)) throw new IllegalStateException("请先授予存储权限，再开始下载。");
+        File dir = configuredDownloadDirectory();
         if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("Cannot create download directory");
         if (!dir.isDirectory() || !dir.canWrite()) throw new IllegalStateException("Download directory is not writable: " + dir);
         return dir;
@@ -218,6 +249,7 @@ public final class TorrentEngine {
     public void changeDownloadDirectory(File directory) {
         io.execute(() -> {
             try {
+                if (!StoragePermission.hasAccess(context)) throw new IllegalStateException("请先授予存储权限。");
                 File target = directory.getCanonicalFile();
                 if (!target.exists() && !target.mkdirs()) throw new IllegalArgumentException("Cannot create selected directory");
                 if (!target.isDirectory() || !target.canWrite()) throw new IllegalArgumentException("Selected directory is not writable");
@@ -233,22 +265,21 @@ public final class TorrentEngine {
     }
 
     public void resetDownloadDirectory() {
-        preferences.edit().remove(KEY_DOWNLOAD_PATH).apply();
-        File target = downloadDirectory();
-        io.execute(() -> {
-            moveTorrentsTo(target);
-            notifyChanged();
-        });
+        // Validate/allocate off the UI thread before replacing the current preference.
+        changeDownloadDirectory(defaultDownloadDirectory());
     }
 
     private void moveTorrentsTo(File target) {
         SessionManager value = manager;
         if (value == null || !value.isRunning()) return;
         torrent_handle_vector handles = value.swig().get_torrents();
-        for (int i = 0; i < handles.size(); i++) {
-            TorrentHandle handle = new TorrentHandle(handles.get(i));
-            if (handle.isValid() && !target.getAbsolutePath().equals(handle.savePath())) handle.moveStorage(target.getAbsolutePath());
-        }
+        try {
+            for (int i = 0; i < handles.size(); i++) {
+                TorrentHandle handle = new TorrentHandle(handles.get(i));
+                if (handle.isValid() && !pendingHashes.contains(handle.infoHash().toHex())
+                        && !target.getAbsolutePath().equals(handle.savePath())) handle.moveStorage(target.getAbsolutePath());
+            }
+        } finally { handles.delete(); }
     }
 
     public void startAsync() {
@@ -271,6 +302,7 @@ public final class TorrentEngine {
 
     private void startInternal() {
         synchronized (lock) {
+            if (!StoragePermission.hasAccess(context)) throw new IllegalStateException("请先授予存储权限。");
             if (isRunning()) return;
             SettingsPack pack = SettingsPack.defaultSettings();
             pack.setPeerFingerprint(PEER_FINGERPRINT.getBytes(StandardCharsets.ISO_8859_1));
@@ -340,6 +372,8 @@ public final class TorrentEngine {
                             AlertType.TRACKER_ERROR.swig(),
                             AlertType.SAVE_RESUME_DATA.swig(),
                             AlertType.SAVE_RESUME_DATA_FAILED.swig(),
+                            AlertType.STORAGE_MOVED.swig(),
+                            AlertType.STORAGE_MOVED_FAILED.swig(),
                             AlertType.TORRENT_FINISHED.swig()
                     };
                 }
@@ -363,6 +397,19 @@ public final class TorrentEngine {
                     TorrentHandle handle = ((org.libtorrent4j.alerts.TorrentAlert<?>) alert).handle();
                     if (handle == null || !handle.isValid()) return;
                     String hash = handle.infoHash().toHex();
+                    if (alert.type() == AlertType.STORAGE_MOVED) {
+                        io.execute(() -> {
+                            if (!activeHashes.contains(hash) || !handle.isValid()) return;
+                            updateSourceDownloadPath(hash, handle.savePath());
+                            requestResumeData(handle, true);
+                            notifyChanged();
+                        });
+                        return;
+                    } else if (alert.type() == AlertType.STORAGE_MOVED_FAILED) {
+                        AppLog.warn("storage_move_failed");
+                        notifyError("下载目录迁移失败，任务仍保留原目录，请检查权限与剩余空间。");
+                        return;
+                    }
                     if (alert instanceof SaveResumeDataFailedAlert) {
                         finishResumeRequest(hash);
                         return;
@@ -1246,14 +1293,15 @@ public final class TorrentEngine {
                 int downloadLimit = item.optInt("downloadLimit", 0);
                 int uploadLimit = item.optInt("uploadLimit", 0);
                 Priority[] priorities = jsonPriorities(item.optJSONArray("filePriorities"));
+                String savedPath = item.optString("savePath", configuredDownloadDirectory().getAbsolutePath());
                 try {
                     AddTorrentParams resumeParams = loadResumeData(item.optString("hash"));
                     if (resumeParams != null) {
                         Log.i(TAG, "Restoring torrent from fastresume checkpoint");
-                        TorrentHandle handle = find(addTorrentParams(resumeParams, paused));
+                        TorrentHandle handle = find(addTorrentParams(resumeParams, paused, savedPath));
                         if (handle != null) applyTorrentOptions(handle, priorities, downloadLimit, uploadLimit);
                     } else if ("magnet".equals(type)) {
-                        TorrentHandle handle = find(addTorrentParams(AddTorrentParams.parseMagnetUri(source), paused));
+                        TorrentHandle handle = find(addTorrentParams(AddTorrentParams.parseMagnetUri(source), paused, savedPath));
                         if (handle != null) applyTorrentOptions(handle, priorities, downloadLimit, uploadLimit);
                     } else if ("torrent".equals(type)) {
                         File file = new File(source);
@@ -1262,7 +1310,7 @@ public final class TorrentEngine {
                             if (priorities.length > 0) params.filePriorities(priorities);
                             params.setDownloadLimit(downloadLimit);
                             params.setUploadLimit(uploadLimit);
-                            TorrentHandle handle = find(addTorrentParams(params, paused));
+                            TorrentHandle handle = find(addTorrentParams(params, paused, savedPath));
                             if (handle != null) applyTorrentOptions(handle, priorities, downloadLimit, uploadLimit);
                         }
                     }
@@ -1290,6 +1338,11 @@ public final class TorrentEngine {
     }
 
     private String addTorrentParams(AddTorrentParams params, boolean paused) {
+        return addTorrentParams(params, paused, downloadDirectory().getAbsolutePath());
+    }
+
+    private String addTorrentParams(AddTorrentParams params, boolean paused, String savePath) {
+        if (!StoragePermission.hasAccess(context)) throw new IllegalStateException("请先授予存储权限。");
         Sha1Hash bestHash = params.getInfoHashes().getBest();
         if (bestHash == null || bestHash.isAllZeros()) {
             throw new IllegalArgumentException("Torrent has an invalid info-hash");
@@ -1304,7 +1357,7 @@ public final class TorrentEngine {
             return hash;
         }
 
-        params.setSavePath(downloadDirectory().getAbsolutePath());
+        params.setSavePath(savePath);
         torrent_flags_t flags = params.getFlags().and_(TorrentFlags.AUTO_MANAGED.inv());
         flags = paused ? flags.or_(TorrentFlags.PAUSED) : flags.and_(TorrentFlags.PAUSED.inv());
         params.setFlags(flags.or_(TorrentFlags.UPDATE_SUBSCRIBE));
@@ -1335,10 +1388,23 @@ public final class TorrentEngine {
             JSONArray priorityValues = new JSONArray();
             for (Priority priority : priorities) priorityValues.put(priority.swig());
             next.put(new JSONObject().put("hash", hash).put("type", type).put("source", source)
+                    .put("savePath", configuredDownloadDirectory().getAbsolutePath())
                     .put("paused", paused).put("filePriorities", priorityValues)
                     .put("downloadLimit", downloadLimit).put("uploadLimit", uploadLimit));
             preferences.edit().putString(KEY_SOURCES, next.toString()).apply();
         } catch (Throwable ignored) {}
+    }
+
+    private synchronized void updateSourceDownloadPath(String hash, String path) {
+        try {
+            JSONArray sources = new JSONArray(preferences.getString(KEY_SOURCES, "[]"));
+            for (int i = 0; i < sources.length(); i++) {
+                JSONObject source = sources.getJSONObject(i);
+                if (hash.equalsIgnoreCase(source.optString("hash"))) source.put("savePath", path);
+            }
+            if (!preferences.edit().putString(KEY_SOURCES, sources.toString()).commit())
+                notifyError("文件已迁移，但目录记录保存失败，请勿立即退出应用。");
+        } catch (Exception error) { AppLog.error("storage_path_save_failed", error); }
     }
 
     private synchronized void setSourcePaused(String hash, boolean paused) {

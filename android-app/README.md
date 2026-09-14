@@ -28,7 +28,7 @@
 - 设置：全局上下行限速、监听端口、DHT、LSD、UPnP、NAT-PMP。
 - 自动保存 magnet/种子来源和暂停状态；暂停任务会清除 auto-managed 标志，运行期间或进程重启后都不会自行恢复。
 - 使用 libtorrent 原生 fast-resume 保存已验证 Piece、未完成区块、文件状态和任务参数；每 15 秒及暂停、继续、限速变化、任务完成和服务退出时创建检查点，重启时无需全量校验未变更的数据。
-- 可通过系统目录选择器更改下载目录；已有任务会迁移到新目录，也可恢复应用专属默认目录。
+- 可通过系统目录选择器更改下载目录；已有任务会迁移到新目录，也可恢复公共默认目录（确认后迁移）。
 - minSdk 26、compile/targetSdk 34，打包 `arm64-v8a`、`armeabi-v7a`、`x86_64`、`x86`；这不代表所有 Android 版本和设备均已验证。
 
 ## 界面预览
@@ -52,7 +52,7 @@
 下载默认保存在：
 
 ```text
-/storage/emulated/0/Android/data/org.qbittorrent.mobile/files/Download
+/storage/emulated/0/Download/qbittorrent
 ```
 
 这是 Android 推荐的应用专属外部目录，不需要额外存储权限。卸载应用时 Android 可能删除该目录；需要长期保留的数据请先备份。
@@ -74,7 +74,9 @@ $env:ANDROID_HOME = 'C:\Android\Sdk'
 
 Debug APK 使用 Android 调试证书签名，适合直接安装测试。正式分发前应创建并妥善保管自己的 release keystore，然后在本机配置 release signing。
 
-本地当前构建产物：`artifacts/qBittorrent-Mobile-0.3.8-universal-debug.apk`。公开仓库不包含历史 APK 或私有测试输入；请按上述步骤自行构建。
+本地当前构建产物：`artifacts/qBittorrent-Mobile-0.3.9-universal-debug.apk`。源码目录不包含 APK 或私有测试输入；预编译 APK 通过 [GitHub Releases](https://github.com/mikulo/qbittorrent-mobile/releases) 分发。
+
+0.3.9（versionCode 14）改用公共 Download/qbittorrent，启动时引导 Android 11+ 所有文件访问/Android 8–10 存储权限。拒绝授权不启动下载、不回退私有目录。升级保留原自定义设置及旧任务目录；设置中恢复默认可确认迁移现有文件。仅构建，未测试或 lint。
 
 0.3.8（versionCode 13）按用户要求将列表、详情、通知、异步状态/统计请求和文件详情采样统一改为 1 秒，保留异步采集实现。本版本只构建 APK，不运行测试或 lint。
 

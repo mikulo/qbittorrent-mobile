@@ -17,6 +17,7 @@
     <application
         android:name=".QBittorrentApp"
         android:allowBackup="true"
+        android:requestLegacyExternalStorage="true"
         android:icon="@drawable/ic_qbittorrent"
         android:label="@string/app_name"
         android:roundIcon="@drawable/ic_qbittorrent"
